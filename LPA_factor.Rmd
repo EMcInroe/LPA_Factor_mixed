@@ -1,0 +1,922 @@
+---
+title: "Data_Classes_Exchange"
+author: "Melissa McInroe"
+date: "2023-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(purrr)
+library(tidyLPA)
+library(mclust)
+library(data.table)
+library(randomForest)
+library(corrplot)
+library(ggplot2)
+library(psych)
+library(nlme)
+library(meta)
+library(reshape2)
+
+#set directory
+```
+
+## Description  
+This program uses census data at the zip code and CBSA level to create descriptive classes. Latent profile analysis (LPA) and factor analysis are used to create the classes. The outcome variable of interest is attributable number per 100K from the climate exchange data results. Variables included in the analysis include:  (add variables with bullet points) 
+
+```{r load output dataset, echo=FALSE}
+##move data set to an accessible folder
+zz_rr<-readRDS("C:/Users/emcinroe/OneDrive - Environmental Protection Agency (EPA)/Profile/Downloads/zip_rr_an_results.RDS")
+
+
+## create data frame with zipcode, CBSA, and the outcome variable ann_an_rate100K
+zz_rr_zip<-zz_rr[,c(1:3,18)]
+rm(zz_rr)
+
+zip_cbsa_an2<-fread("C:/Users/emcinroe/OneDrive - Environmental Protection Agency (EPA)/Profile/Documents/Climate_Data_Exc/zip_cbsa_an2.csv", header=TRUE, drop = 1)
+
+# Data set with scaled variables by CBSA
+#scaled_df<-fread("C:/Users/emcinroe/OneDrive - Environmental Protection Agency (EPA)/Profile/Documents/Climate_Data_Exc/sesvar_cbsa_norm.csv",header=TRUE, drop=1)
+```
+
+### Scaling Data
+```{r scale, echo=FALSE}
+scaled_vars<-zip_cbsa_an2 %>% mutate_at(c(6:20), ~scale(.))
+scaled_vars<-as.data.frame(scaled_vars)
+
+scaled_vars$median_value<-scaled_vars$median_value[,1]
+scaled_vars$median_income<-scaled_vars$median_income[,1]
+scaled_vars$per_over65<-scaled_vars$per_over65[,1]
+scaled_vars$per_over65y2<-scaled_vars$per_over65y2[,1]
+scaled_vars$per_own_home<-scaled_vars$per_own_home[,1]
+scaled_vars$per_rent_home<-scaled_vars$per_rent_home[,1]
+scaled_vars$per_live_alone<-scaled_vars$per_live_alone[,1]
+scaled_vars$per_pov<-scaled_vars$per_pov[,1]
+scaled_vars$per_HI<-scaled_vars$per_HI[,1]
+scaled_vars$per_white_nothis<-scaled_vars$per_white_nothis[,1]
+scaled_vars$per_black<-scaled_vars$per_black[,1]
+scaled_vars$per_hispanic<-scaled_vars$per_hispanic[,1]
+scaled_vars$per_other_combined<-scaled_vars$per_other_combined[,1]
+scaled_vars$per_public_trans<-scaled_vars$per_public_trans[,1]
+scaled_vars$no_college<-scaled_vars$no_college[,1]
+
+randfor<-scaled_vars[,-c(1:5,9,11)]
+#randfor_CBSA<-scaled_vars[,-c(1:2,4,5,9,11)]
+```
+
+
+
+### PCA
+
+```{r PCA}
+pr.out<-prcomp(randfor[,-14], scale =TRUE,center = TRUE)
+
+pr.out$rotation
+
+pr.var<-pr.out$sdev^2
+pve<-pr.var/sum(pr.var)
+
+par(mfrow=c(1,2))
+plot(pve, ylim=c(0,1), type="b")
+plot(cumsum(pve), ylim=c(0,1), type = "b")
+```
+
+### LPA  
+
+```{r LPA}
+# With scaled dataset
+set.seed(907)
+
+m4 <- randfor[,-14] %>%
+  single_imputation() %>% 
+  estimate_profiles(4)
+
+est<-get_data(m4)
+
+est %>% count(Class)
+
+# Join classes with scaled data set, method tested in Mixed_Effect_Models.R
+class_vars2<-merge(scaled_vars[,-c(22:25)], est, by="row.names", all.x=TRUE)
+class_vars2<-class_vars2[,-c(1,23:41)]
+class_vars2$Class<-as.factor(class_vars2$Class)
+
+# Box plots of class and variables
+ggplot(melt(class_vars2[,-c(1:5,9,11,18,21)],id.var="Class")) + 
+  geom_boxplot(aes(Class, value, color=Class)) + 
+  facet_wrap(~variable) +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(), 
+        axis.ticks.x = element_blank(), axis.title.y = element_blank()) +
+  scale_color_discrete(name="Class") +
+  scale_y_continuous(expand = c(0,0))
+```
+
+
+### Factor Analysis  
+
+```{r Factor Analysis}
+datamatrix<-cor(zip_cbsa_an2[,c(6:20)])
+corrplot(datamatrix, method = "number")
+
+KMO(r=cor(zip_cbsa_an2[,c(6:20)]))
+## KMO 0.5 indicates that low factorability
+
+datamatrix<-cor(randfor)
+corrplot(datamatrix, method = "number")
+
+KMO(r=cor(randfor))
+#0.85 is favorable for factor analysis (before scaling, after scaling KMO = 0.63)
+factor.an<-factanal(randfor[,-14], factors =4, n.obs=7776, scores = "Bartlett") # need # of observations to perform hyp test that factor # is sufficient
+print(factor.an)
+load<-factor.an$loadings[,1:2]
+load2<-factor.an$loadings[,2:3]
+load3<-factor.an$loadings[,3:4]
+par(mfrow=c(1,3))
+plot(load, type = "n")
+text(load, labels = names(randfor), cex=.5)
+plot(load2, type = "n")
+text(load2, labels = names(randfor), cex=.5)
+plot(load3, type = "n")
+text(load3, labels = names(randfor), cex=.5)
+
+fs<-factor.an$scores
+scaled_vars<-cbind(scaled_vars,fs)
+```
+
+Tried factor analysis with fa() as well. Output gave warning about ultra-Heywood case (commonalities greater than 1). Commonalities for each variable calculated by summing the squares of the loadings for each factor. Default methods for rotation is "oblimin" and scores is "regression". Default methods for factanal() for rotation is "varimax". For the scores calculation above, the scores are calculated using the "Bartlett" method (not orthogonal) which gives more weight to variables that have lower variances. (squared residuals/variances) 
+
+### Random Forest
+
+```{r random forest}
+set.seed(206)
+rf.model<-randomForest(ann_an_rate100k~., data=randfor, mtry=6, importance=TRUE)
+importance(rf.model)
+varImpPlot(rf.model)
+```
+
+
+###XGBooost
+
+```{r xgboost}
+
+```
+
+
+## Random Effects Models
+#### Percent of population who take public transportation to work
+
+```{r Percent Public Transportation}
+model<-lme(ann_an_rate100k~per_public_trans, random =~1+per_public_trans|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Public Transportation")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_public_trans, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-data.frame(confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+#### Median Property Value
+
+```{r Median Value}
+model<-lme(ann_an_rate100k~median_value, random =~1+median_value|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Median Property Value")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=median_value, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+
+```
+
+#### Percent with Health Insurance
+
+```{r}
+model<-lme(ann_an_rate100k~per_HI, random =~1+per_HI|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent with Health Insurance")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_HI, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+#### Percent Hispanic
+
+```{r Percent Hispanic}
+model<-lme(ann_an_rate100k~per_hispanic, random =~1+per_hispanic|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model)
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent Hispanic")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_hispanic, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+
+```
+
+#### Percent Other Races Combined
+
+```{r}
+model<-lme(ann_an_rate100k~per_other_combined, random =~1+per_other_combined|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent Other Races")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_other_combined, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+#### Percent of Population Over 65
+
+```{r}
+model<-lme(ann_an_rate100k~per_over65, random =~1+per_over65|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent of Population Over 65")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_over65, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+
+#### Percent of Population with No College
+
+```{r}
+model<-lme(ann_an_rate100k~no_college, random =~1+no_college|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent with No College")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=no_college, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+#### Median Income
+
+```{r}
+model<-lme(ann_an_rate100k~median_income, random =~1+median_income|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Median Income")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=median_income, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+
+```
+
+#### Percent Living Alone
+
+```{r}
+model<-lme(ann_an_rate100k~per_live_alone, random =~1+per_live_alone|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent Living Alone")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_live_alone, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+
+#### Percent Black
+
+```{r}
+model<-lme(ann_an_rate100k~per_black, random =~1+per_black|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent Black")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_black, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+
+#### Percent White, not Hispanic
+
+```{r}
+model<-lme(ann_an_rate100k~per_white_nothis, random =~1+per_white_nothis|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent White, not Hispanic")
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_white_nothis, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+
+#### Percent Who Own Home
+
+```{r}
+model<-lme(ann_an_rate100k~per_own_home, random =~1+per_own_home|CBSA, data = scaled_vars)
+
+summary(model)
+## Check Assumptions
+# Homogeneity
+plot(model)
+#Normality
+hist(model$residuals, main="Residual Distribution for model")
+qqnorm(model$residuals)
+qqline(model$residuals)
+
+rans<-ranef(model) 
+rans
+plot(rans[,1]~rans[,2],ylab="Intercept",xlab="Slope", main="Random Effects based on Percent who Own Home")
+
+
+ggplot(scaled_vars,aes(y=ann_an_rate100k, x=per_own_home, color=as.factor(CBSA))) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  theme(legend.position="none")
+
+mean(rans[,2])
+ggplot(rans, aes(y=rans[,2])) + geom_boxplot() + labs(title="Random Effects Slopes") + ylab("CBSA Slopes")
+
+fit<-fitted(model)
+confid<-intervals(model, which="fixed")
+confid
+fixed<-rbind(fixed, confid$fixed)
+plot(model, CBSA~fitted(.))
+
+fit_df<-as.data.frame(fit)
+fit_df$CBSA <-cbind(names(fit))
+fit_df$CBSA<-as.character(fit_df$CBSA)
+
+fit_df<-fit_df %>% group_by(CBSA) %>% summarise(max = max(fit),min=min(fit),mean = mean(fit))
+
+ggplot(data=fit_df, aes(y=reorder(CBSA,mean), x=mean, xmin=min, xmax=max)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  scale_y_discrete(breaks = 1:nrow(fit_df), labels = fit_df$CBSA) +
+  labs(title = "Fit Values") + ylab("CBSA") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme_minimal()
+```
+
+## Fixed Effects
+```{r fixed effects}
+
+fixed_int<-fixed[rownames(fixed) %like% "Intercept",]
+fixed_coef<-fixed[!grepl("Intercept", rownames(fixed)),]
+
+ggplot(data=fixed_coef, aes(y=reorder(rownames(fixed_coef),est.), x=est., xmin=lower, xmax=upper)) + 
+  geom_point() +
+  geom_errorbarh(height=.1) +
+  labs(title = "Fixed Effect 95% Confidence Intervals") + xlab("Mean Estimated Coefficient") +
+  geom_vline(xintercept=0, color = "black", linetype = "dashed", alpha = .5) +
+  theme(axis.title.y=element_blank())
+```
+
+## Mixed Effect Model with Classes
+
+```{r Classes Mixed Effect}
+
+#Mixed effect model with random intercept
+model10<-lme(ann_an_rate100k~Class, random =~1|CBSA, data = class_vars2)
+summary(model10)
+## Mixed effect with random intercept and slope
+model11<-lme(ann_an_rate100k~Class, random =~1+Class|CBSA, data = class_vars2)
+summary(model11)
+
+rans10<-ranef(model10)
+rans11<-ranef(model11)
+
+
+plot(rans11[,1]~rans11[,2],ylab="Intercept",xlab="Slope Class 2", main="Random Effects based LPA Class")
+colors<-c("Class 2"="blue","Class 3"="red","Class 4"="green")
+ggplot(rans11, aes(y=rans11[,1], x=rans11[,2])) + geom_point(aes(color = "Class 2")) +
+  geom_point(aes(y=rans11[,1],x=rans11[,3], color = "Class 3")) +
+  geom_point(aes(y=rans11[,1],x=rans11[,4],color="Class 4")) +
+  labs(x="Random Effect Slope", y="Random Effect Intercept", color = "Legend") + 
+  scale_color_manual(values=colors)
+
+fit<-fitted(model11)
+confid<-intervals(model11, which="fixed")
+confid
+
+```
+
+## Median Value and Public Transportation Mixed Effect Model
+
+```{r}
+model12<-lme(ann_an_rate100k~per_public_trans.x+median_value.x, random=~1+per_public_trans.x+median_value.x|CBSA, data=class_vars2)
+summary(model12)
+
+rans12<-ranef(model12)
+
+colors<-c("Public Transportation"="blue", "Median Home Value"="red")
+ggplot(rans12, aes(x=rans12[,1], y=rans12[,2])) + geom_point(aes(color = "Public Transportation")) +
+  geom_point(aes(x=rans12[,1],y=rans12[,3], color = "Median Home Value")) +
+  labs(y="Random Effect Slope", x="Random Effect Intercept", color = "Legend") + 
+  scale_color_manual(values=colors)
+
+model13<-lme(ann_an_rate100k~per_public_trans+per_pov+per_over65+median_value, random=~1+per_public_trans+per_pov+per_over65+median_value|CBSA, data=scaled_vars)
+summary(model13)
+```
+
+### Mixed Models with Factor Scores
+
+```{r factor models}
+## Model with all 4 factors as random slope converges. 
+
+model14<-lme(ann_an_rate100k~Factor1+Factor2+Factor3+Factor4, random=~1+Factor1+Factor2+Factor4|CBSA, data=scaled_vars)
+summary(model14)
+
+model15<-lme(ann_an_rate100k~Factor1+Factor2+Factor3+Factor4, random=~1+Factor1+Factor2|CBSA, data=scaled_vars)
+summary(model15)
+
+## Name factors based on high correlations
+```
+
+### Model Validation  
+5% of the observations are retained for a test set. The models are trained on the remaining observations. Random slopes removed from Factors model after 6 interactions due to convergence error. The Root Mean Square Error is calculated using the predicted and observed values of the attributable rate. The RMSE is greatly influences by the sample that is generated. The process was completed with different random samples (50 iterations) and RMSE varied by more the 5+ units, but the trend did not change. The factor model and the class model(LPA) always have the lowest RMSE. Results will be different because the sequence is random. Section not evaluated during knitting due to the time. Results for the iterations are found in the table "C:/Users/emcinroe/OneDrive - Environmental Protection Agency (EPA)/Profile/Documents/Climate_Data_Exc/model_CV_summary.csv". Boxplots comparing the different methods are also available in the same folder. Models that do not include CBSA (Models 3 and 6) do not perform as well as the models that do.
+
+```{r Model Validation, results='asis', eval=FALSE}
+#randfor_CBSA<-scaled_vars[,-c(1:2,4,5,9,11,22:25)]
+val_sum<-data.frame(matrix(NA,nrow=50,ncol=7))
+colnames(val_sum)<-c("Model1","Model2","Model3","Model4","Model5","Model6","Model7")
+for(i in 1:50) {
+train<-sample(1:nrow(class_vars2),nrow(class_vars2)*.95)
+model17<-lme(ann_an_rate100k~median_value.x+median_income.x+per_over65.x+per_own_home.x+per_live_alone.x+per_pov.x+
+               per_HI.x+per_white_nothis.x+per_black.x+per_hispanic.x+per_other_combined.x+
+               no_college.x,random = ~1|CBSA, data = class_vars2[train,])
+yhat<-predict(model17, newdata=class_vars2[-train,])
+class_test<-class_vars2[-train,"ann_an_rate100k"]
+#plot(yhat,class_test, main="Model 1")
+#abline(0,1)
+#MSE<-round(mean((yhat-class_test)^2),2)         
+Model1<-round(sqrt(mean((yhat-class_test)^2)),2)
+#Model<-"Mixed Effects without Public Transportation or Random Slope"
+
+#with Public Transportation
+model18<-lme(ann_an_rate100k~median_value.x+median_income.x+per_over65.x+per_own_home.x+per_live_alone.x+per_pov.x+
+               per_HI.x+per_white_nothis.x+per_black.x+per_hispanic.x+per_other_combined.x+
+               no_college.x+per_public_trans.x,random = ~1|CBSA, data = class_vars2[train,])
+yhat<-predict(model18, newdata=class_vars2[-train,])
+class_test<-class_vars2[-train,"ann_an_rate100k"]
+#plot(yhat,class_test, main="Model 2")
+#abline(0,1)
+#MSE<-round(mean((yhat-class_test)^2),2)            
+Model2<-round(sqrt(mean((yhat-class_test)^2)),2)
+#Model<-"Mixed Effects with Public Transportation w/o Random Slope"
+
+## fixed effect model with public transportation
+model19<-lm(ann_an_rate100k~., data = randfor[train,])
+yhat<-predict(model19, newdata=randfor[-train,])
+class_test<-randfor[-train,"ann_an_rate100k"]
+#plot(yhat,class_test,main="Model 3")
+#abline(0,1)
+#MSE<-round(mean((yhat-class_test)^2),2)            
+Model3<-round(sqrt(mean((yhat-class_test)^2)),2)
+#Model<-"Linear Model with All Variables"
+
+## With factor scores
+model20<-lme(ann_an_rate100k~Factor1+Factor2+Factor3+Factor4, random=~1|CBSA, data=scaled_vars[train,])
+yhat<-predict(model20, newdata=scaled_vars[-train,])
+scaled_test<-scaled_vars[-train,"ann_an_rate100k"]
+#plot(yhat,scaled_test, main="Model 4")
+#abline(0,1)
+#MSE<-round(mean((yhat-scaled_test)^2),2)           
+Model4<-round(sqrt(mean((yhat-scaled_test)^2)),2)
+#Model<-"Mixed Model with Random Slopes and Factor Scores"
+
+## With Classes
+model11<-lme(ann_an_rate100k~Class, random =~1+Class|CBSA, data = class_vars2[train,])
+yhat<-predict(model11, newdata=class_vars2[-train,])
+class_test<-class_vars2[-train,"ann_an_rate100k"]
+#plot(yhat,class_test, main="Model 5")
+#abline(0,1)
+#MSE<-round(mean((yhat-class_test)^2),2)            
+Model5<-round(sqrt(mean((yhat-class_test)^2)),2)
+
+#Random Forest w/o CBSA
+rf.model<-randomForest(ann_an_rate100k~., data=randfor[train,], mtry=6, importance=TRUE)
+yhat<-predict(rf.model, newdata=randfor[-train,])
+class_test<-randfor[-train,"ann_an_rate100k"]
+#plot(yhat,class_test,main="Model 6")
+#abline(0,1)
+#MSE<-round(mean((yhat-class_test)^2),2)            
+Model6<-round(sqrt(mean((yhat-class_test)^2)),2)
+
+#Random Forest w/ CBSA
+rf.model<-randomForest(ann_an_rate100k~., data=randfor_CBSA[train,], mtry=6, importance=TRUE)
+yhat<-predict(rf.model, newdata=randfor_CBSA[-train,])
+class_test<-randfor_CBSA[-train,"ann_an_rate100k"]
+Model7<-round(sqrt(mean((yhat-class_test)^2)),2)
+
+val_sum[i,]<-cbind(Model1,Model2,Model3,Model4,Model5,Model6,Model7)
+}
+val_sum$iteration<-rownames(val_sum)
+box_val_full<-ggplot(melt(val_sum, id.var="iteration")) + geom_boxplot(aes(variable, value)) + 
+         ggtitle("Models 5% Holdout Validation") +
+            theme(plot.title=element_text(hjust=0.5))
+ggsave("C:/Users/emcinroe/OneDrive - Environmental Protection Agency (EPA)/Profile/Documents/Climate_Data_Exc/box_val_full.png",box_val_full)
+
+val_sum_subset<-val_sum[,-c(3,6)]
+
+box_val_subset<-ggplot(melt(val_sum_subset, id.var="iteration")) + geom_boxplot(aes(variable, value)) + 
+         ggtitle("Models 5% Holdout Validation") +
+            theme(plot.title=element_text(hjust=0.5))
+
+ggsave("C:/Users/emcinroe/OneDrive - Environmental Protection Agency (EPA)/Profile/Documents/Climate_Data_Exc/box_val_subset.png",box_val_subset)
+
+summary(randfor$ann_an_rate100k)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-169.297   -8.379    6.460    8.263   22.013  130.348 
+
+write.csv(val_sum,"C:/Users/emcinroe/OneDrive - Environmental Protection Agency (EPA)/Profile/Documents/Climate_Data_Exc/model_CV_summary.csv")
+```
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
